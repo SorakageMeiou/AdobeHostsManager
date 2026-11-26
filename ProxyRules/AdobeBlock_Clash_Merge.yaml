@@ -1,0 +1,12 @@
+# Clash Verge Rev / Mihomo 全局扩展覆写配置（Global Merge / Override）
+# 使用方式：复制到客户端「全局扩展覆写配置」即可，订阅更新也不会失效
+use-system-hosts: true
+
+rule-providers:
+  adobe-block:
+    type: file
+    behavior: classical
+    path: "C:/Users/Administrator/Desktop/解决Adobe弹窗工具/编译/ProxyRules/AdobeBlock_Clash_Provider.yaml"
+
+prepend-rules:
+  - RULE-SET,adobe-block,REJECT
