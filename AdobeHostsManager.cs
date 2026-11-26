@@ -14,7 +14,7 @@ using System.Web.Script.Serialization;
 using Microsoft.Win32;
 
 [assembly: AssemblyTitle("AdobeHostsManager")]
-[assembly: AssemblyDescription("Adobe hosts")]
+[assembly: AssemblyDescription("AdobeHostsManager")]
 [assembly: AssemblyCompany("@空影メイオウ SORAKAGEMEIOU")]
 [assembly: AssemblyProduct("AdobeHostsManager")]
 [assembly: AssemblyVersion("1.0.0.0")]
@@ -56,6 +56,7 @@ namespace AdobeHostsManager
         public bool HasClash { get; set; }
         public bool HasV2Ray { get; set; }
         public string[] ClashDirs { get; set; }
+        public string[] V2RayNDirs { get; set; }
     }
 
     internal class ExternalFirewallRuleInfo
@@ -113,13 +114,19 @@ namespace AdobeHostsManager
 
     internal static class Program
     {
-        // ==================== 基础路径与标记 ====================
+        // ==================== 基础路径与标记（全部输出隔离至 %APPDATA%，不污染程序原目录） ====================
         private static readonly string ToolFolder = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\', '/');
-        private static readonly string OfflineListFile = Path.Combine(ToolFolder, "AdobeHosts_Offline.txt");
+        private static readonly string AppDataFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "AdobeHostsManager"
+        );
+        private static readonly string OfflineListFile = Path.Combine(AppDataFolder, "AdobeHosts_Offline.txt");
+        private static readonly string LegacyToolOfflineFile = Path.Combine(ToolFolder, "AdobeHosts_Offline.txt");
         private static readonly string ExtraHostsFile = Path.Combine(ToolFolder, "AdobeHosts_Extra.txt");
         private static readonly string ExtraFirewallFile = Path.Combine(ToolFolder, "AdobeFirewall_Extra.txt");
-        private static readonly string ManualExportFile = Path.Combine(ToolFolder, "AdobeHosts_ManualPaste.txt");
-        private static readonly string ProxyOutputDir = Path.Combine(ToolFolder, "ProxyRules");
+        private static readonly string ManualExportFile = Path.Combine(AppDataFolder, "AdobeHosts_ManualPaste.txt");
+        private static readonly string ProxyOutputDir = Path.Combine(AppDataFolder, "ProxyRules");
+
         private static readonly string HostsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"drivers\etc");
         private static readonly string HostsFile = Path.Combine(HostsDir, "hosts");
         private static readonly string BackupFile = Path.Combine(HostsDir, "hosts.didixk-backup");
@@ -131,6 +138,11 @@ namespace AdobeHostsManager
         private const string PreviousDateHeaderPattern = @"^#Hosts_block_Adobe_Last_update_\d{4}-\d{1,2}-\d{1,2}_[0-9:_]+_UTC(?:_By_[A-Za-z0-9.-]+)?\s*$";
         private const string V2RayRuleTag = "didixk-adobe-block";
         private const string FirewallRulePrefix = "Didixk_Adobe_Block_";
+
+        private const string JsBlockBegin = "// BEGIN DIDIXK ADOBE BLOCK";
+        private const string JsBlockEnd = "// END DIDIXK ADOBE BLOCK";
+        private const string ClashProviderFileName = "AdobeBlock_Clash_Provider.yaml";
+        private const string MihomoOverrideId = "didixk-adobe-block";
 
         // 内置补充易漏 Adobe 正版校验与遥测域名（自动合并去重）
         private static readonly string[] BuiltInExtraDomains =
@@ -175,7 +187,7 @@ namespace AdobeHostsManager
         private static int Main(string[] args)
         {
             try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
-            try { Console.Title = "Adobe hosts Manager | By @空影メイオウ SORAKAGEMEIOU"; } catch { }
+            try { Console.Title = "AdobeHostsManager |v1.0| @空影メイオウ SORAKAGEMEIOU"; } catch { }
 
             RuleList resolvedListForFallback = null;
             string resolvedSourceLabel = "";
@@ -386,22 +398,18 @@ namespace AdobeHostsManager
 
         private static void PrintHelp()
         {
-            Console.WriteLine("AdobeHostsManager.exe - Adobe hosts、防火墙与代理规则自动化管理工具");
+            Console.WriteLine("AdobeHostsManager");
             Console.WriteLine("作者：@空影メイオウ SORAKAGEMEIOU");
             Console.WriteLine();
             Console.WriteLine("用法示例：");
-            Console.WriteLine("  AdobeHostsManager.exe                                  自动更新 hosts；若防火墙已有相关规则则同步更新");
+            Console.WriteLine("  AdobeHostsManager.exe                                  自动更新 hosts、防火墙及本机代理软件规则");
             Console.WriteLine("  AdobeHostsManager.exe -Action Status                   查看当前 hosts、防火墙规则与离线列表状态");
-            Console.WriteLine("  AdobeHostsManager.exe -Action Remove                   移除受管 hosts、受管防火墙及代理拦截规则");
+            Console.WriteLine("  AdobeHostsManager.exe -Action Remove                   移除受管 hosts、防火墙及自动注入的代理规则");
             Console.WriteLine("  AdobeHostsManager.exe -FirewallMode Auto|Force|Skip    Auto=有类似规则才更新 | Force=强制添加 | Skip=跳过");
-            Console.WriteLine("  AdobeHostsManager.exe -ProxyMode Clash                 指定生成/同步 Clash/Mihomo 规则");
+            Console.WriteLine("  AdobeHostsManager.exe -ProxyMode Auto|Clash|V2Ray|None 自动注入 Clash / V2Ray 拦截规则（输出存于 AppData）");
             Console.WriteLine("  AdobeHostsManager.exe -Proxy \"http://127.0.0.1:7890\"   通过 HTTP 代理拉取在线规则");
             Console.WriteLine("  AdobeHostsManager.exe -OfflineOnly                     跳过在线源，直接使用本地离线列表");
             Console.WriteLine("  AdobeHostsManager.exe -NoPause                         静默运行，结束或出错时不等待按键");
-            Console.WriteLine();
-            Console.WriteLine("可选扩展规则文件（放在同目录下即可自动加载）：");
-            Console.WriteLine("  AdobeHosts_Extra.txt       每行一个额外域名（自动合并进 hosts 与代理规则）");
-            Console.WriteLine("  AdobeFirewall_Extra.txt    每行一个额外 .exe 路径或 IP/CIDR 段（防火墙更新时一并生效）");
         }
 
         // ==================== 权限检查与自动提权 ====================
@@ -529,32 +537,35 @@ namespace AdobeHostsManager
                 }
             }
 
-            if (!File.Exists(ExtraHostsFile)) return;
-
-            try
+            string[] extraPaths = { Path.Combine(AppDataFolder, "AdobeHosts_Extra.txt"), ExtraHostsFile };
+            foreach (string path in extraPaths)
             {
-                string[] extraLines = File.ReadAllLines(ExtraHostsFile, Encoding.UTF8);
-                foreach (string raw in extraLines)
+                if (!File.Exists(path)) continue;
+                try
                 {
-                    string line = raw.Trim();
-                    if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
-
-                    if (line.StartsWith("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
-                        line.StartsWith("127.0.0.1", StringComparison.OrdinalIgnoreCase))
+                    string[] extraLines = File.ReadAllLines(path, Encoding.UTF8);
+                    foreach (string raw in extraLines)
                     {
-                        string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length >= 2) line = parts[1].Trim();
-                    }
+                        string line = raw.Trim();
+                        if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
 
-                    string norm = line.ToLowerInvariant();
-                    if (norm.Length > 0 && norm.Length <= 253 && domainRegex.IsMatch(norm) && unique.Add(norm))
-                    {
-                        domains.Add(norm);
-                        validated.Add("0.0.0.0 " + norm);
+                        if (line.StartsWith("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+                            line.StartsWith("127.0.0.1", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string[] parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                            if (parts.Length >= 2) line = parts[1].Trim();
+                        }
+
+                        string norm = line.ToLowerInvariant();
+                        if (norm.Length > 0 && norm.Length <= 253 && domainRegex.IsMatch(norm) && unique.Add(norm))
+                        {
+                            domains.Add(norm);
+                            validated.Add("0.0.0.0 " + norm);
+                        }
                     }
                 }
+                catch { }
             }
-            catch { }
         }
 
         private static DateTime? ParseRevisionDate(string revision)
@@ -574,8 +585,15 @@ namespace AdobeHostsManager
 
         private static RuleList ReadLocalList()
         {
-            if (!File.Exists(OfflineListFile)) return null;
-            return TestRules(File.ReadAllText(OfflineListFile, Encoding.UTF8));
+            if (File.Exists(OfflineListFile))
+            {
+                return TestRules(File.ReadAllText(OfflineListFile, Encoding.UTF8));
+            }
+            if (File.Exists(LegacyToolOfflineFile))
+            {
+                return TestRules(File.ReadAllText(LegacyToolOfflineFile, Encoding.UTF8));
+            }
+            return null;
         }
 
         private static ResolvedRules GetOnlineListWithFailover()
@@ -601,7 +619,7 @@ namespace AdobeHostsManager
                     req.ReadWriteTimeout = 12000;
                     req.AllowAutoRedirect = true;
                     req.MaximumAutomaticRedirections = 3;
-                    req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AdobeHostsManager/1.2";
+                    req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AdobeHostsManager/1.0";
 
                     if (!string.IsNullOrWhiteSpace(_opts.Proxy))
                     {
@@ -633,7 +651,8 @@ namespace AdobeHostsManager
 
         private static void SaveOfflineCache(string rawText)
         {
-            string tmp = Path.Combine(ToolFolder, "AdobeHosts_Offline." + Guid.NewGuid().ToString("N") + ".tmp");
+            Directory.CreateDirectory(AppDataFolder);
+            string tmp = Path.Combine(AppDataFolder, "AdobeHosts_Offline." + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
                 File.WriteAllText(tmp, rawText, new UTF8Encoding(false));
@@ -655,7 +674,7 @@ namespace AdobeHostsManager
             {
                 if (local == null)
                 {
-                    throw new FileNotFoundException("已指定 -OfflineOnly，但同目录下缺少有效的 AdobeHosts_Offline.txt。");
+                    throw new FileNotFoundException("已指定 -OfflineOnly，但 AppData 缓存或程序目录中缺少有效的 AdobeHosts_Offline.txt。");
                 }
                 return new ResolvedRules
                 {
@@ -695,7 +714,7 @@ namespace AdobeHostsManager
                         SourceLabel = "本地离线列表（自动回退）"
                     };
                 }
-                throw new InvalidOperationException("在线拉取失败且同目录缺少可用的离线列表 AdobeHosts_Offline.txt。" + ex.Message, ex);
+                throw new InvalidOperationException("在线拉取失败且缺少可用的离线列表 AdobeHosts_Offline.txt。" + ex.Message, ex);
             }
         }
 
@@ -967,34 +986,37 @@ namespace AdobeHostsManager
 
         private static void LoadExtraFirewallTargets(List<string> exePaths, List<string> ipRanges)
         {
-            if (!File.Exists(ExtraFirewallFile)) return;
-
+            string[] extraPaths = { Path.Combine(AppDataFolder, "AdobeFirewall_Extra.txt"), ExtraFirewallFile };
             HashSet<string> existingExes = new HashSet<string>(exePaths, StringComparer.OrdinalIgnoreCase);
             Regex ipOrCidrRegex = new Regex(@"^(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?$");
 
-            try
+            foreach (string path in extraPaths)
             {
-                string[] lines = File.ReadAllLines(ExtraFirewallFile, Encoding.UTF8);
-                foreach (string raw in lines)
+                if (!File.Exists(path)) continue;
+                try
                 {
-                    string line = raw.Trim().Trim('"');
-                    if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
+                    string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                    foreach (string raw in lines)
+                    {
+                        string line = raw.Trim().Trim('"');
+                        if (line.Length == 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
 
-                    if (ipOrCidrRegex.IsMatch(line))
-                    {
-                        ipRanges.Add(line);
-                    }
-                    else if (line.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string normalized = NormalizeFilePath(line);
-                        if (File.Exists(normalized) && existingExes.Add(normalized))
+                        if (ipOrCidrRegex.IsMatch(line))
                         {
-                            exePaths.Add(normalized);
+                            ipRanges.Add(line);
+                        }
+                        else if (line.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string normalized = NormalizeFilePath(line);
+                            if (File.Exists(normalized) && existingExes.Add(normalized))
+                            {
+                                exePaths.Add(normalized);
+                            }
                         }
                     }
                 }
+                catch { }
             }
-            catch { }
         }
 
         private static string SyncFirewallRules(bool removeOnly)
@@ -1055,8 +1077,7 @@ namespace AdobeHostsManager
                 }
             }
 
-            int removedOldManaged = scan.ManagedRuleNames.Count;
-            if (removedOldManaged > 0)
+            if (scan.ManagedRuleNames.Count > 0)
             {
                 RemoveManagedFirewallRules(scan.ManagedRuleNames);
             }
@@ -1260,6 +1281,7 @@ namespace AdobeHostsManager
             if (list == null) return false;
             try
             {
+                Directory.CreateDirectory(AppDataFolder);
                 string blockText = string.Join("\r\n", BuildRuleBlockLines(list, sourceLabel));
                 File.WriteAllText(ManualExportFile, blockText + "\r\n", new UTF8Encoding(false));
                 return true;
@@ -1358,32 +1380,92 @@ namespace AdobeHostsManager
             catch { }
         }
 
-        // ==================== 代理客户端（Clash / V2Ray / v2rayN）自动化联动 ====================
+        // ==================== 代理客户端（Clash / Mihomo Party / v2rayN）全自动规则注入 ====================
         private static string[] GetDetectedClashDirs()
         {
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
             string[] candidates =
             {
                 Path.Combine(appData, "io.github.clash-verge-rev.clash-verge-rev"),
                 Path.Combine(appData, "mihomo-party"),
+                Path.Combine(appData, "clash-party"),
                 Path.Combine(appData, "clash-nyanpasu"),
+                Path.Combine(appData, "Clash Nyanpasu"),
+                Path.Combine(localAppData, "Clash Nyanpasu", "data"),
+                Path.Combine(appData, "flclash"),
                 Path.Combine(userProfile, @".config\clash"),
                 Path.Combine(userProfile, @".config\mihomo")
             };
 
+            HashSet<string> unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<string> found = new List<string>();
             foreach (string dir in candidates)
             {
-                if (Directory.Exists(dir)) found.Add(dir);
+                if (Directory.Exists(dir) && unique.Add(dir))
+                {
+                    found.Add(dir);
+                }
             }
+            return found.ToArray();
+        }
+
+        private static string[] GetDetectedV2RayNDirs()
+        {
+            HashSet<string> unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<string> found = new List<string>();
+
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+            string[] candidates =
+            {
+                Path.Combine(appData, "v2rayN"),
+                Path.Combine(localAppData, "v2rayN")
+            };
+
+            foreach (string dir in candidates)
+            {
+                if (Directory.Exists(dir) && unique.Add(dir))
+                {
+                    found.Add(dir);
+                }
+            }
+
+            try
+            {
+                foreach (Process p in Process.GetProcesses())
+                {
+                    try
+                    {
+                        if (string.Equals(p.ProcessName, "v2rayN", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string exePath = p.MainModule.FileName;
+                            string dir = Path.GetDirectoryName(exePath);
+                            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir) && unique.Add(dir))
+                            {
+                                found.Add(dir);
+                            }
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        p.Dispose();
+                    }
+                }
+            }
+            catch { }
+
             return found.ToArray();
         }
 
         private static ProxyPresence TestProxyClientPresence()
         {
             string[] clashDirs = GetDetectedClashDirs();
+            string[] v2rayNDirs = GetDetectedV2RayNDirs();
             bool hasClashProc = false;
             bool hasV2RayProc = false;
 
@@ -1406,28 +1488,20 @@ namespace AdobeHostsManager
             }
             catch { }
 
-            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-
             bool hasClash = (clashDirs.Length > 0) || hasClashProc;
-            bool hasV2Ray = Directory.Exists(Path.Combine(appData, "v2rayN")) ||
-                            Directory.Exists(Path.Combine(localAppData, "v2rayN")) ||
-                            hasV2RayProc ||
-                            !string.IsNullOrWhiteSpace(_opts.ProxyConfigPath);
+            bool hasV2Ray = (v2rayNDirs.Length > 0) || hasV2RayProc || !string.IsNullOrWhiteSpace(_opts.ProxyConfigPath);
 
             return new ProxyPresence
             {
                 HasClash = hasClash,
                 HasV2Ray = hasV2Ray,
-                ClashDirs = clashDirs
+                ClashDirs = clashDirs,
+                V2RayNDirs = v2rayNDirs
             };
         }
 
-        private static string WriteClashProxyRules(RuleList list, string[] clashDirs)
+        private static string BuildClashProviderContent(RuleList list)
         {
-            Directory.CreateDirectory(ProxyOutputDir);
-            UTF8Encoding utf8NoBom = new UTF8Encoding(false);
-
             List<string> providerLines = new List<string>(list.Domains.Length + 4);
             providerLines.Add("# Author: @空影メイオウ SORAKAGEMEIOU");
             providerLines.Add(string.Format("# List update: {0} | Count: {1}", list.Revision, list.Count));
@@ -1436,44 +1510,303 @@ namespace AdobeHostsManager
             {
                 providerLines.Add("  - 'DOMAIN," + d + "'");
             }
-            string providerText = string.Join("\r\n", providerLines.ToArray()) + "\r\n";
-            string localProviderPath = Path.Combine(ProxyOutputDir, "AdobeBlock_Clash_Provider.yaml");
-            File.WriteAllText(localProviderPath, providerText, utf8NoBom);
+            return string.Join("\r\n", providerLines.ToArray()) + "\r\n";
+        }
 
-            string providerPathForYaml = localProviderPath.Replace('\\', '/');
-            string mergeYaml = string.Join("\r\n", new[]
+        private static string BuildMihomoPlusOverrideYaml()
+        {
+            return string.Join("\r\n", new[]
             {
-                "# Clash Verge Rev / Mihomo 全局扩展覆写配置（Global Merge / Override）",
-                "# 使用方式：复制到客户端「全局扩展覆写配置」即可，订阅更新也不会失效",
+                "# Author: @空影メイオウ SORAKAGEMEIOU",
+                "# 适用于 Mihomo Party / Clash Party 全局或订阅覆写（使用 +rules 插入规则列表最顶部）",
                 "use-system-hosts: true",
                 "",
                 "rule-providers:",
-                "  adobe-block:",
+                "  didixk-adobe-block:",
                 "    type: file",
                 "    behavior: classical",
-                "    path: \"" + providerPathForYaml + "\"",
+                "    path: \"./rules/" + ClashProviderFileName + "\"",
                 "",
-                "prepend-rules:",
-                "  - RULE-SET,adobe-block,REJECT",
+                "+rules:",
+                "  - RULE-SET,didixk-adobe-block,REJECT",
                 ""
             });
-            File.WriteAllText(Path.Combine(ProxyOutputDir, "AdobeBlock_Clash_Merge.yaml"), mergeYaml, utf8NoBom);
+        }
 
-            int deployed = 0;
+        private static string BuildClashVergeJsSnippet()
+        {
+            return string.Join("\r\n", new[]
+            {
+                "  " + JsBlockBegin,
+                "  if (config && typeof config === 'object') {",
+                "    config['use-system-hosts'] = true;",
+                "    if (!config['rule-providers'] || typeof config['rule-providers'] !== 'object') {",
+                "      config['rule-providers'] = {};",
+                "    }",
+                "    config['rule-providers']['didixk-adobe-block'] = {",
+                "      type: 'file',",
+                "      behavior: 'classical',",
+                "      path: './rules/" + ClashProviderFileName + "'",
+                "    };",
+                "    if (!Array.isArray(config.rules)) {",
+                "      config.rules = [];",
+                "    }",
+                "    config.rules = config.rules.filter(function (r) {",
+                "      return typeof r !== 'string' || r.indexOf('RULE-SET,didixk-adobe-block,') !== 0;",
+                "    });",
+                "    config.rules.unshift('RULE-SET,didixk-adobe-block,REJECT');",
+                "  }",
+                "  " + JsBlockEnd
+            });
+        }
+
+        private static string RemoveJsManagedBlock(string scriptText)
+        {
+            List<string> lines = new List<string>();
+            bool skipping = false;
+            foreach (string raw in scriptText.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None))
+            {
+                string trim = raw.Trim();
+                if (trim == JsBlockBegin)
+                {
+                    skipping = true;
+                    continue;
+                }
+                if (skipping)
+                {
+                    if (trim == JsBlockEnd) skipping = false;
+                    continue;
+                }
+                lines.Add(raw);
+            }
+            return string.Join("\r\n", lines.ToArray());
+        }
+
+        private static bool InjectClashVergeGlobalScript(string vergeDir, UTF8Encoding utf8NoBom)
+        {
+            string profilesDir = Path.Combine(vergeDir, "profiles");
+            Directory.CreateDirectory(profilesDir);
+
+            string scriptPath = Path.Combine(profilesDir, "Script.js");
+            string snippet = BuildClashVergeJsSnippet();
+
+            if (!File.Exists(scriptPath))
+            {
+                string newScript = string.Join("\r\n", new[]
+                {
+                    "// Clash Verge Rev 全局扩展脚本 | Author: @空影メイオウ SORAKAGEMEIOU",
+                    "function main(config, profileName) {",
+                    snippet,
+                    "  return config;",
+                    "}",
+                    ""
+                });
+                File.WriteAllText(scriptPath, newScript, utf8NoBom);
+            }
+            else
+            {
+                string existing = File.ReadAllText(scriptPath, Encoding.UTF8);
+                string backup = scriptPath + ".didixk-backup";
+                if (!File.Exists(backup))
+                {
+                    File.WriteAllText(backup, existing, utf8NoBom);
+                }
+
+                string cleaned = RemoveJsManagedBlock(existing);
+                Match retMatch = Regex.Match(cleaned, @"^[ \t]*return\s+config\s*;?", RegexOptions.Multiline);
+                string updated;
+                if (retMatch.Success)
+                {
+                    updated = cleaned.Insert(retMatch.Index, snippet + "\r\n");
+                }
+                else
+                {
+                    updated = cleaned.TrimEnd() + "\r\n\r\nfunction main(config, profileName) {\r\n" + snippet + "\r\n  return config;\r\n}\r\n";
+                }
+                File.WriteAllText(scriptPath, updated, utf8NoBom);
+            }
+
+            string profilesYamlPath = Path.Combine(vergeDir, "profiles.yaml");
+            if (File.Exists(profilesYamlPath))
+            {
+                string pYaml = File.ReadAllText(profilesYamlPath, Encoding.UTF8);
+                if (pYaml.IndexOf("file: Script.js", StringComparison.OrdinalIgnoreCase) < 0 &&
+                    pYaml.IndexOf("items:", StringComparison.Ordinal) >= 0)
+                {
+                    string backup = profilesYamlPath + ".didixk-backup";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, pYaml, utf8NoBom);
+                    }
+
+                    long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
+                    string itemEntry = string.Join("\r\n", new[]
+                    {
+                        "  - uid: Script",
+                        "    type: script",
+                        "    name: null",
+                        "    file: Script.js",
+                        "    updated: " + ts
+                    });
+                    pYaml = Regex.Replace(pYaml, @"^items:\s*\r?\n", "items:\r\n" + itemEntry + "\r\n", RegexOptions.Multiline);
+                    File.WriteAllText(profilesYamlPath, pYaml, utf8NoBom);
+                }
+            }
+
+            string vergeCfgPath = Path.Combine(vergeDir, "clash-verge.yaml");
+            if (File.Exists(vergeCfgPath))
+            {
+                string vYaml = File.ReadAllText(vergeCfgPath, Encoding.UTF8);
+                if (Regex.IsMatch(vYaml, @"^use_script:\s*false\s*$", RegexOptions.Multiline))
+                {
+                    vYaml = Regex.Replace(vYaml, @"^use_script:\s*false\s*$", "use_script: true", RegexOptions.Multiline);
+                    File.WriteAllText(vergeCfgPath, vYaml, utf8NoBom);
+                }
+            }
+
+            return true;
+        }
+
+        private static bool InjectMihomoPartyOverride(string partyDir, string overrideYaml, UTF8Encoding utf8NoBom)
+        {
+            string overrideDir = Path.Combine(partyDir, "override");
+            Directory.CreateDirectory(overrideDir);
+
+            string overrideFilePath = Path.Combine(overrideDir, MihomoOverrideId + ".yaml");
+            File.WriteAllText(overrideFilePath, overrideYaml, utf8NoBom);
+
+            long ts = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds;
+            string profileYamlPath = Path.Combine(overrideDir, "profile.yaml");
+            if (!File.Exists(profileYamlPath))
+            {
+                string newProfileYaml = string.Join("\r\n", new[]
+                {
+                    "items:",
+                    "  - id: " + MihomoOverrideId,
+                    "    name: AdobeHostsManager",
+                    "    type: local",
+                    "    ext: yaml",
+                    "    global: true",
+                    "    updated: " + ts,
+                    ""
+                });
+                File.WriteAllText(profileYamlPath, newProfileYaml, utf8NoBom);
+            }
+            else
+            {
+                string pYaml = File.ReadAllText(profileYamlPath, Encoding.UTF8);
+                if (pYaml.IndexOf("id: " + MihomoOverrideId, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    string entry = string.Join("\r\n", new[]
+                    {
+                        "  - id: " + MihomoOverrideId,
+                        "    name: AdobeHostsManager",
+                        "    type: local",
+                        "    ext: yaml",
+                        "    global: true",
+                        "    updated: " + ts
+                    });
+                    if (Regex.IsMatch(pYaml, @"^items:\s*\[\s*\]\s*$", RegexOptions.Multiline))
+                    {
+                        pYaml = Regex.Replace(pYaml, @"^items:\s*\[\s*\]\s*$", "items:\r\n" + entry, RegexOptions.Multiline);
+                    }
+                    else if (Regex.IsMatch(pYaml, @"^items:\s*$", RegexOptions.Multiline))
+                    {
+                        pYaml = Regex.Replace(pYaml, @"^items:\s*$", "items:\r\n" + entry, RegexOptions.Multiline);
+                    }
+                    else
+                    {
+                        pYaml = pYaml.TrimEnd() + "\r\nitems:\r\n" + entry + "\r\n";
+                    }
+                    File.WriteAllText(profileYamlPath, pYaml, utf8NoBom);
+                }
+            }
+
+            string configYamlPath = Path.Combine(partyDir, "config.yaml");
+            if (File.Exists(configYamlPath))
+            {
+                string cYaml = File.ReadAllText(configYamlPath, Encoding.UTF8);
+                if (cYaml.IndexOf(MihomoOverrideId, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    string backup = configYamlPath + ".didixk-backup";
+                    if (!File.Exists(backup))
+                    {
+                        File.WriteAllText(backup, cYaml, utf8NoBom);
+                    }
+
+                    if (Regex.IsMatch(cYaml, @"^override:\s*\[\s*\]\s*$", RegexOptions.Multiline))
+                    {
+                        cYaml = Regex.Replace(cYaml, @"^override:\s*\[\s*\]\s*$", "override:\r\n  - " + MihomoOverrideId, RegexOptions.Multiline);
+                        File.WriteAllText(configYamlPath, cYaml, utf8NoBom);
+                    }
+                    else if (Regex.IsMatch(cYaml, @"^override:\s*$", RegexOptions.Multiline))
+                    {
+                        cYaml = Regex.Replace(cYaml, @"^override:\s*$", "override:\r\n  - " + MihomoOverrideId, RegexOptions.Multiline);
+                        File.WriteAllText(configYamlPath, cYaml, utf8NoBom);
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static string WriteClashProxyRules(RuleList list, string[] clashDirs)
+        {
+            Directory.CreateDirectory(ProxyOutputDir);
+            UTF8Encoding utf8NoBom = new UTF8Encoding(false);
+
+            string providerText = BuildClashProviderContent(list);
+            string mihomoOverrideYaml = BuildMihomoPlusOverrideYaml();
+
+            File.WriteAllText(Path.Combine(ProxyOutputDir, ClashProviderFileName), providerText, utf8NoBom);
+            File.WriteAllText(Path.Combine(ProxyOutputDir, "AdobeBlock_Mihomo_Override.yaml"), mihomoOverrideYaml, utf8NoBom);
+
+            int deployedCount = 0;
+            List<string> injectedClients = new List<string>();
+
             foreach (string dir in clashDirs)
             {
                 try
                 {
                     string rulesDir = Path.Combine(dir, "rules");
                     Directory.CreateDirectory(rulesDir);
-                    File.WriteAllText(Path.Combine(rulesDir, "AdobeBlock_Clash_Provider.yaml"), providerText, utf8NoBom);
-                    deployed++;
+                    File.WriteAllText(Path.Combine(rulesDir, ClashProviderFileName), providerText, utf8NoBom);
+                    deployedCount++;
+
+                    string lowerDir = dir.ToLowerInvariant();
+                    if (lowerDir.Contains("clash-verge-rev"))
+                    {
+                        if (InjectClashVergeGlobalScript(dir, utf8NoBom))
+                        {
+                            injectedClients.Add("Clash Verge Rev");
+                        }
+                    }
+                    else if (lowerDir.Contains("mihomo-party") || lowerDir.Contains("clash-party"))
+                    {
+                        if (InjectMihomoPartyOverride(dir, mihomoOverrideYaml, utf8NoBom))
+                        {
+                            injectedClients.Add("Mihomo Party");
+                        }
+                    }
+                    else if (lowerDir.Contains("nyanpasu"))
+                    {
+                        string mergeDir = Path.Combine(dir, "profiles");
+                        Directory.CreateDirectory(mergeDir);
+                        File.WriteAllText(Path.Combine(mergeDir, "AdobeBlock_Mihomo_Override.yaml"), mihomoOverrideYaml, utf8NoBom);
+                    }
                 }
                 catch { }
             }
 
-            return "Clash 规则已生成（" + ProxyOutputDir +
-                   (deployed > 0 ? string.Format("，已自动同步至 {0} 个 Clash 目录", deployed) : "") + "）";
+            if (injectedClients.Count > 0)
+            {
+                return string.Format("Clash 规则已自动注入 {0}（重载订阅/配置即生效）", string.Join(" / ", injectedClients.ToArray()));
+            }
+            if (deployedCount > 0)
+            {
+                return string.Format("Clash 规则集已部署至 {0} 个客户端目录（配置模板位于 {1}）", deployedCount, ProxyOutputDir);
+            }
+            return "Clash 规则已生成至 AppData（" + ProxyOutputDir + "）";
         }
 
         private static void UpdateV2RayJsonConfig(string configPath, RuleList list, bool removeOnly)
@@ -1550,7 +1883,97 @@ namespace AdobeHostsManager
             File.WriteAllText(configPath, prettyJson + "\r\n", utf8NoBom);
         }
 
-        private static string WriteV2RayProxyRules(RuleList list)
+        private static bool InjectV2RayNGuiConfig(string v2rayNDir, RuleList list, bool removeOnly, UTF8Encoding utf8NoBom)
+        {
+            string guiConfigPath = Path.Combine(Path.Combine(v2rayNDir, "guiConfigs"), "guiNConfig.json");
+            if (!File.Exists(guiConfigPath)) return false;
+
+            try
+            {
+                string rawJson = File.ReadAllText(guiConfigPath, Encoding.UTF8);
+                string backup = guiConfigPath + ".didixk-backup";
+                if (!File.Exists(backup))
+                {
+                    File.WriteAllText(backup, rawJson, utf8NoBom);
+                }
+
+                JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                Dictionary<string, object> cfg = serializer.Deserialize<Dictionary<string, object>>(rawJson);
+                if (cfg == null) return false;
+
+                ArrayList routings = cfg.ContainsKey("routings") ? cfg["routings"] as ArrayList : null;
+                if (routings == null)
+                {
+                    routings = new ArrayList();
+                    cfg["routings"] = routings;
+                }
+
+                bool modified = false;
+                for (int i = 0; i < routings.Count; i++)
+                {
+                    Dictionary<string, object> rItem = routings[i] as Dictionary<string, object>;
+                    if (rItem == null) continue;
+
+                    string remarks = rItem.ContainsKey("remarks") ? Convert.ToString(rItem["remarks"]) : "";
+                    ArrayList ruleSet = rItem.ContainsKey("ruleSet") ? rItem["ruleSet"] as ArrayList : null;
+                    if (ruleSet == null) continue;
+
+                    List<object> cleanedRules = new List<object>();
+                    foreach (object rObj in ruleSet)
+                    {
+                        Dictionary<string, object> rDict = rObj as Dictionary<string, object>;
+                        if (rDict != null && rDict.ContainsKey("ruleTag") &&
+                            string.Equals(Convert.ToString(rDict["ruleTag"]), V2RayRuleTag, StringComparison.Ordinal))
+                        {
+                            modified = true;
+                            continue;
+                        }
+                        cleanedRules.Add(rObj);
+                    }
+
+                    if (!removeOnly && (i == 0 || remarks.IndexOf("默认", StringComparison.Ordinal) >= 0 ||
+                                        remarks.IndexOf("Default", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        string[] fullDomains = new string[list.Domains.Length];
+                        for (int j = 0; j < list.Domains.Length; j++)
+                        {
+                            fullDomains[j] = "full:" + list.Domains[j];
+                        }
+
+                        Dictionary<string, object> blockRule = new Dictionary<string, object>
+                        {
+                            { "id", "" },
+                            { "type", "field" },
+                            { "port", "" },
+                            { "inboundTag", new string[0] },
+                            { "outboundTag", "block" },
+                            { "ip", new string[0] },
+                            { "domain", fullDomains },
+                            { "protocol", new string[0] },
+                            { "enabled", true },
+                            { "ruleTag", V2RayRuleTag }
+                        };
+                        cleanedRules.Insert(0, blockRule);
+                        modified = true;
+                    }
+
+                    rItem["ruleSet"] = cleanedRules;
+                }
+
+                if (modified)
+                {
+                    string prettyJson = FormatJson(serializer.Serialize(cfg));
+                    File.WriteAllText(guiConfigPath, prettyJson + "\r\n", utf8NoBom);
+                }
+                return modified;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string WriteV2RayProxyRules(RuleList list, string[] v2rayNDirs)
         {
             Directory.CreateDirectory(ProxyOutputDir);
             UTF8Encoding utf8NoBom = new UTF8Encoding(false);
@@ -1574,14 +1997,31 @@ namespace AdobeHostsManager
             File.WriteAllText(Path.Combine(ProxyOutputDir, "AdobeBlock_V2Ray_Routing.json"), routingJson + "\r\n", utf8NoBom);
             File.WriteAllText(Path.Combine(ProxyOutputDir, "AdobeBlock_v2rayN_Domains.txt"), string.Join("\r\n", fullDomains) + "\r\n", utf8NoBom);
 
-            string injectedNote = "";
+            List<string> notes = new List<string>();
             if (!string.IsNullOrWhiteSpace(_opts.ProxyConfigPath))
             {
                 UpdateV2RayJsonConfig(_opts.ProxyConfigPath, list, false);
-                injectedNote = "，并已自动写入 " + _opts.ProxyConfigPath;
+                notes.Add("已自动写入 " + _opts.ProxyConfigPath);
             }
 
-            return "V2Ray/v2rayN 规则已生成（" + ProxyOutputDir + injectedNote + "）";
+            foreach (string vDir in v2rayNDirs)
+            {
+                if (InjectV2RayNGuiConfig(vDir, list, false, utf8NoBom))
+                {
+                    notes.Add("已自动注入 v2rayN 路由规则");
+                }
+                string binConfig = Path.Combine(Path.Combine(vDir, "binConfigs"), "config.json");
+                if (File.Exists(binConfig))
+                {
+                    try { UpdateV2RayJsonConfig(binConfig, list, false); } catch { }
+                }
+            }
+
+            if (notes.Count > 0)
+            {
+                return string.Format("V2Ray/v2rayN 规则已生成至 AppData（{0}）", string.Join("，", notes.ToArray()));
+            }
+            return "V2Ray/v2rayN 规则已生成至 AppData（" + ProxyOutputDir + "）";
         }
 
         private static string SyncProxyRules(RuleList list, bool removeOnly)
@@ -1592,23 +2032,51 @@ namespace AdobeHostsManager
                 return "";
             }
 
+            UTF8Encoding utf8NoBom = new UTF8Encoding(false);
+
             if (removeOnly)
             {
                 List<string> notes = new List<string>();
                 foreach (string dir in GetDetectedClashDirs())
                 {
-                    string f = Path.Combine(Path.Combine(dir, "rules"), "AdobeBlock_Clash_Provider.yaml");
-                    try { if (File.Exists(f)) File.Delete(f); } catch { }
+                    try
+                    {
+                        string f = Path.Combine(Path.Combine(dir, "rules"), ClashProviderFileName);
+                        if (File.Exists(f)) File.Delete(f);
+
+                        string scriptPath = Path.Combine(Path.Combine(dir, "profiles"), "Script.js");
+                        if (File.Exists(scriptPath))
+                        {
+                            string cleaned = RemoveJsManagedBlock(File.ReadAllText(scriptPath, Encoding.UTF8));
+                            File.WriteAllText(scriptPath, cleaned, utf8NoBom);
+                        }
+
+                        string mihomoOvr = Path.Combine(Path.Combine(dir, "override"), MihomoOverrideId + ".yaml");
+                        if (File.Exists(mihomoOvr)) File.Delete(mihomoOvr);
+                    }
+                    catch { }
                 }
+
+                foreach (string vDir in GetDetectedV2RayNDirs())
+                {
+                    InjectV2RayNGuiConfig(vDir, null, true, utf8NoBom);
+                    string binConfig = Path.Combine(Path.Combine(vDir, "binConfigs"), "config.json");
+                    if (File.Exists(binConfig))
+                    {
+                        try { UpdateV2RayJsonConfig(binConfig, null, true); } catch { }
+                    }
+                }
+
                 if (Directory.Exists(ProxyOutputDir))
                 {
                     try
                     {
                         Directory.Delete(ProxyOutputDir, true);
-                        notes.Add("已清理生成的代理规则文件");
+                        notes.Add("已清理 AppData 代理规则与注入配置");
                     }
                     catch { }
                 }
+
                 if (!string.IsNullOrWhiteSpace(_opts.ProxyConfigPath) && File.Exists(_opts.ProxyConfigPath))
                 {
                     UpdateV2RayJsonConfig(_opts.ProxyConfigPath, null, true);
@@ -1627,7 +2095,7 @@ namespace AdobeHostsManager
 
             List<string> summaries = new List<string>();
             if (doClash) summaries.Add(WriteClashProxyRules(list, detected.ClashDirs));
-            if (doV2Ray) summaries.Add(WriteV2RayProxyRules(list));
+            if (doV2Ray) summaries.Add(WriteV2RayProxyRules(list, detected.V2RayNDirs));
 
             return string.Join("；", summaries.ToArray());
         }
@@ -1694,7 +2162,7 @@ namespace AdobeHostsManager
         {
             Console.WriteLine();
             WriteColoredLine("====================================================================", ConsoleColor.Red);
-            WriteColoredLine("  执行失败 — 故障排查与手动操作指南", ConsoleColor.Red);
+            WriteColoredLine("  AdobeHostsManager — 执行失败与排查指南", ConsoleColor.Red);
             WriteColoredLine("  作者：@空影メイオウ SORAKAGEMEIOU", ConsoleColor.Gray);
             WriteColoredLine("====================================================================", ConsoleColor.Red);
             WriteColoredLine("错误原因：" + ex.Message, ConsoleColor.Red);
@@ -1702,7 +2170,7 @@ namespace AdobeHostsManager
             Console.WriteLine();
 
             WriteColoredLine("【常见失败原因与解决方法】", ConsoleColor.Yellow);
-            WriteColoredLine("  1. 杀毒软件 / 安全防护拦截 hosts 或防火墙修改", ConsoleColor.White);
+            WriteColoredLine("  1. 杀毒软件 / 安全防护拦截 hosts 或防火墙修改（最常见）", ConsoleColor.White);
             Console.WriteLine("     火绒、360、Windows Defender、腾讯电脑管家、卡巴斯基等常锁定 hosts 或接管防火墙。");
             Console.WriteLine("     请先暂时关闭防护，完成后再开启；或加参数 -FirewallMode Skip 仅修改 hosts。");
             WriteColoredLine("  2. 权限不足或域控限制", ConsoleColor.White);
@@ -1715,11 +2183,11 @@ namespace AdobeHostsManager
             Console.WriteLine("     请关闭记事本、VS Code、SwitchHosts、Watt Toolkit (Steam++) 或代理软件后重试。");
             WriteColoredLine("  5. GitHub / 规则源无法访问且本地缺少离线文件", ConsoleColor.White);
             Console.WriteLine("     程序已内置 Fastly / Gcore / jsDelivr 多路 CDN 镜像；若仍全部不通：");
-            Console.WriteLine("     - 确认同目录存在 AdobeHosts_Offline.txt，再加 -OfflineOnly 运行；");
+            Console.WriteLine("     - 确认 AppData 或同目录存在 AdobeHosts_Offline.txt，再加 -OfflineOnly 运行；");
             Console.WriteLine("     - 若有本地代理，可带参数运行：AdobeHostsManager.exe -Proxy \"http://127.0.0.1:7890\"");
             WriteColoredLine("  6. 使用 Clash / V2Ray 代理时 hosts 不生效", ConsoleColor.White);
-            Console.WriteLine("     代理软件的系统代理或 TUN(Fake-IP) 模式会绕过 Windows hosts，请使用 -ProxyMode Clash/V2Ray/All");
-            Console.WriteLine("     生成代理拦截规则，或在 Clash 覆写中开启 use-system-hosts: true。");
+            Console.WriteLine("     程序已自动向 Clash Verge Rev / Mihomo Party / v2rayN 注入拦截规则；");
+            Console.WriteLine("     若正在运行代理客户端，请在客户端中点击「重新加载/刷新订阅」使新规则立即生效。");
             WriteColoredLine("  7. 旧规则区块标记不完整", ConsoleColor.White);
             Console.WriteLine("     若曾手动删坏 hosts 末尾标记，请用备份 hosts.didixk-backup 恢复。");
             Console.WriteLine();
@@ -1742,7 +2210,7 @@ namespace AdobeHostsManager
                 }
                 else if (File.Exists(OfflineListFile))
                 {
-                    Console.WriteLine("  1. 打开同目录离线规则文件：" + OfflineListFile + " 并全选复制。");
+                    Console.WriteLine("  1. 打开离线规则文件：" + OfflineListFile + " 并全选复制。");
                 }
                 else
                 {
